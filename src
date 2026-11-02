@@ -1,0 +1,285 @@
+import './style.css';
+import { supabase, isSupabaseConfigured } from './supabase.js';
+
+const HABITS = [
+  ['morning', 'Wake up with intention'],
+  ['study', 'Focused study session'],
+  ['movement', 'Move / stretch'],
+  ['tomorrow', 'Plan a gentle tomorrow']
+];
+const CATEGORIES = ['Learning', 'Work', 'Personal', 'Health', 'Other'];
+const $ = (id) => document.getElementById(id);
+const today = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+};
+const escapeHtml = (s='') => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let user = null, tasks = [], habits = [], logs = [], filter = 'all', selectedDay = today(), busy = false;
+
+function authView(mode='signin', message='', isError=false) {
+  $('app').innerHTML = `
+    <section class="auth-wrap"><div class="auth-card">
+      <div class="auth-mark">✿</div><h1>Little by Little</h1>
+      <p>A softer way to stay on track.<br/>Your little steps, saved safely in your own space.</p>
+      <div class="auth-tabs">
+        <button id="signinTab" class="${mode==='signin'?'active':''}">Log in</button>
+        <button id="signupTab" class="${mode==='signup'?'active':''}">Create account</button>
+      </div>
+      <form id="authForm" class="auth-form">
+        <label>Email address<input class="field" id="email" type="email" autocomplete="email" placeholder="you@example.com" required /></label>
+        <label>Password<input class="field" id="password" type="password" autocomplete="${mode==='signup'?'new-password':'current-password'}" minlength="6" placeholder="At least 6 characters" required /></label>
+        <button class="btn" id="submitAuth" type="submit">${mode==='signup'?'Create my account':'Continue with email'}</button>
+      </form>
+      <div id="authMessage" class="message ${isError?'error':''}">${escapeHtml(message)}</div>
+      <div class="divider">OR</div>
+      <button class="google" id="googleBtn">Continue with Google</button>
+      <div class="auth-foot">Your journal is private to your account. Use the same login on any device to access your saved days.</div>
+    </div></section>`;
+  $('signinTab').onclick = () => authView('signin');
+  $('signupTab').onclick = () => authView('signup');
+  $('authForm').onsubmit = async (e) => {
+    e.preventDefault();
+    const email = $('email').value.trim(), password = $('password').value;
+    const btn = $('submitAuth'); btn.disabled = true; btn.textContent = 'Please wait…';
+    const result = mode === 'signup'
+      ? await supabase.auth.signUp({ email, password, options: { emailRedirectTo: window.location.origin } })
+      : await supabase.auth.signInWithPassword({ email, password });
+    if (result.error) authView(mode, result.error.message, true);
+    else if (mode === 'signup' && !result.data.session) authView('signin', 'Account created. Check your email and confirm your address, then log in.');
+  };
+  $('googleBtn').onclick = async () => {
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: { redirectTo: window.location.origin }
+    });
+    if (error) authView(mode, error.message, true);
+  };
+}
+
+function setupView() {
+  $('app').innerHTML = `<section class="setup"><div class="auth-mark">✿</div><h2>One small setup step</h2>
+    <p>Supabase credentials are not connected yet. This project is ready; add your project's URL and publishable/anon key to a local <code>.env</code> file.</p>
+    <ol><li>Open Supabase → Project Settings → API.</li><li>Copy Project URL and the publishable key (or legacy anon key).</li><li>Rename <code>.env.example</code> to <code>.env</code> and paste the values.</li><li>Restart the app using <code>npm run dev</code>.</li></ol>
+    <p><strong>Important:</strong> Never put your Supabase service-role key in this website.</p></section>`;
+}
+
+function shell() {
+  $('app').innerHTML = `
+    <header class="top"><div class="brand"><div class="logo">✿</div><div><h1>Little by Little</h1><p>a softer way to stay on track</p></div></div>
+      <div class="account"><span class="user-chip" id="userEmail"></span><button class="btn ghost" id="signoutBtn">Log out</button></div>
+    </header>
+    <section class="hero"><div class="eyebrow">YOUR PERSONAL DAILY JOURNAL</div><h2 id="greeting">A little progress is still progress.</h2><p id="todayLabel">Make room for what matters today.</p><span class="flower">✿</span></section>
+    <section class="stats">
+      <div class="card stat"><small>Completed</small><strong id="completed">0</strong><em>tasks finished</em></div>
+      <div class="card stat"><small>Active</small><strong id="active">0</strong><em>tasks on this day</em></div>
+      <div class="card stat"><small>Learning</small><strong id="learning">0h</strong><em id="learningSub">time invested</em></div>
+      <div class="card stat"><small>Pending</small><strong id="pending">0</strong><em>waiting for you</em></div>
+    </section>
+    <section class="card progress"><div class="progressline"><b>Today's little wins</b><span id="percent">0% complete</span></div><div class="track"><div class="fill" id="fill"></div></div></section>
+    <div class="grid">
+      <section class="panel"><div class="head"><h3>Daily intentions</h3><input class="field" id="dayPicker" type="date" aria-label="Choose journal date" /></div>
+        <form class="formrow" id="taskForm"><input class="field task" id="taskInput" placeholder="Add something you want to do…" maxlength="160" required /><select id="category">${CATEGORIES.map(c=>`<option>${c}</option>`).join('')}</select><button class="btn">＋ Add</button></form>
+        <div class="filters"><button class="filter active" data-filter="all">Everything</button><button class="filter" data-filter="active">Pending</button><button class="filter" data-filter="done">Completed</button></div><div class="tasklist" id="taskList"></div>
+      </section>
+      <aside>
+        <section class="panel"><div class="head"><h3>Daily rituals</h3><span class="muted">little habits</span></div><div id="habits"></div></section>
+        <section class="panel"><div class="head"><h3>Learning log</h3><span class="muted">study / practice</span></div><form id="learnForm" class="learningrow"><input class="field" id="learnMinutes" type="number" min="1" max="1440" placeholder="Minutes" required /><button class="btn">＋ Log</button></form><p class="muted">Add the minutes you spent learning on this day.</p><div class="learningtotal" id="todayLearning">0 min</div><div id="learningItems"></div></section>
+        <section class="panel"><div class="head"><h3>This week</h3><span class="muted">daily completion</span></div><div class="week" id="week"></div></section>
+        <section class="panel"><div class="head"><h3>Your full record</h3><span class="muted">all saved days</span></div><div class="history" id="history"></div><p class="privacy">Your records are stored in your account and protected by database access rules.</p><div class="actions"><button class="btn ghost" id="exportBtn">Export my data</button><button class="btn ghost" id="deleteBtn">Delete my data</button></div></section>
+      </aside>
+    </div><div id="appMessage" class="message"></div>`;
+  $('userEmail').textContent = user.email || 'Your account';
+  $('greeting').textContent = `Welcome back${user.email ? '' : ''}.`;
+  $('dayPicker').value = selectedDay;
+  $('signoutBtn').onclick = async () => { await supabase.auth.signOut(); };
+  $('dayPicker').onchange = async () => { selectedDay = $('dayPicker').value || today(); await loadData(); };
+  $('taskForm').onsubmit = addTask;
+  $('learnForm').onsubmit = addLearning;
+  document.querySelectorAll('.filter').forEach(b => b.onclick = () => {
+    filter = b.dataset.filter;
+    document.querySelectorAll('.filter').forEach(x => x.classList.toggle('active', x === b));
+    renderTasks();
+  });
+  $('exportBtn').onclick = exportData;
+  $('deleteBtn').onclick = deleteData;
+}
+
+function setMessage(msg, error=false) {
+  const el = $('appMessage'); if (!el) return;
+  el.textContent = msg; el.classList.toggle('error', error);
+}
+function dayTasks(day=selectedDay) { return tasks.filter(t => t.day === day); }
+function dayHabits(day=selectedDay) { return habits.filter(h => h.day === day); }
+function dayLogs(day=selectedDay) { return logs.filter(l => l.day === day); }
+function minutesFor(day=selectedDay) { return dayLogs(day).reduce((sum, l) => sum + l.minutes, 0); }
+
+async function loadData() {
+  setMessage('Loading your journal…');
+  const [t,h,l] = await Promise.all([
+    supabase.from('tasks').select('*').order('created_at', {ascending:true}),
+    supabase.from('habits').select('*'),
+    supabase.from('learning_logs').select('*').order('created_at', {ascending:true})
+  ]);
+  const error = t.error || h.error || l.error;
+  if (error) { setMessage(error.message + ' — Check that you ran supabase/schema.sql.', true); return; }
+  tasks = t.data || []; habits = h.data || []; logs = l.data || [];
+  render(); setMessage('');
+}
+
+async function addTask(e) {
+  e.preventDefault(); const title = $('taskInput').value.trim(); if (!title) return;
+  const { error } = await supabase.from('tasks').insert({user_id:user.id, day:selectedDay, title, category:$('category').value});
+  if (error) return setMessage(error.message, true);
+  $('taskInput').value = ''; await loadData();
+}
+async function toggleTask(task, checked) {
+  const { error } = await supabase.from('tasks').update({is_done:checked}).eq('id',task.id);
+  if (error) setMessage(error.message, true); else await loadData();
+}
+async function removeTask(task) {
+  if (!confirm('Delete this task?')) return;
+  const { error } = await supabase.from('tasks').delete().eq('id',task.id);
+  if (error) setMessage(error.message, true); else await loadData();
+}
+async function toggleHabit(key, checked) {
+  const existing = habits.find(h => h.day === selectedDay && h.habit_key === key);
+  const result = existing
+    ? await supabase.from('habits').update({is_done:checked}).eq('id',existing.id)
+    : await supabase.from('habits').insert({user_id:user.id, day:selectedDay, habit_key:key, is_done:checked});
+  if (result.error) setMessage(result.error.message, true); else await loadData();
+}
+async function addLearning(e) {
+  e.preventDefault(); const minutes = Number($('learnMinutes').value);
+  if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) return;
+  const { error } = await supabase.from('learning_logs').insert({user_id:user.id, day:selectedDay, minutes});
+  if (error) return setMessage(error.message, true);
+  $('learnMinutes').value = ''; await loadData();
+}
+async function removeLearning(log) {
+  const { error } = await supabase.from('learning_logs').delete().eq('id',log.id);
+  if (error) setMessage(error.message, true); else await loadData();
+}
+
+function renderTasks() {
+  const list = $('taskList'); if (!list) return;
+  list.innerHTML = '';
+  const visible = dayTasks().filter(t => filter==='all' || (filter==='done' ? t.is_done : !t.is_done));
+  if (!visible.length) { list.innerHTML = '<div class="empty">Nothing here just yet. Add a small intention above ✿</div>'; return; }
+  visible.forEach(task => {
+    const row = document.createElement('div'); row.className = 'taskrow' + (task.is_done?' done':'');
+    const cb = document.createElement('input'); cb.type='checkbox'; cb.checked=task.is_done; cb.onchange=()=>toggleTask(task,cb.checked);
+    const txt = document.createElement('span'); txt.className='tasktext'; txt.textContent=task.title;
+    const tag = document.createElement('span'); tag.className='tag'; tag.textContent=task.category;
+    const del = document.createElement('button'); del.className='del'; del.textContent='×'; del.title='Delete task'; del.onclick=()=>removeTask(task);
+    row.append(cb,txt,tag,del); list.append(row);
+  });
+}
+function renderHabits() {
+  const box=$('habits'); box.innerHTML='';
+  HABITS.forEach(([key,name])=>{
+    const existing=dayHabits().find(h=>h.habit_key===key), checked=!!existing?.is_done;
+    const row=document.createElement('div'); row.className='habit';
+    const label=document.createElement('label'), cb=document.createElement('input'); cb.type='checkbox'; cb.checked=checked; cb.onchange=()=>toggleHabit(key,cb.checked);
+    label.append(cb,document.createTextNode(name));
+    const status=document.createElement('span'); status.className='muted'; status.textContent=checked?'Done':'Not yet';
+    row.append(label,status); box.append(row);
+  });
+}
+function renderWeek() {
+  const box=$('week'); box.innerHTML='';
+  const chosen=new Date(`${selectedDay}T12:00:00`), start=new Date(chosen);
+  start.setDate(chosen.getDate()-((chosen.getDay()+6)%7));
+  for(let i=0;i<7;i++){
+    const d=new Date(start); d.setDate(start.getDate()+i);
+    const key=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const items=tasks.filter(t=>t.day===key), done=items.filter(t=>t.is_done).length;
+    const el=document.createElement('div'); el.className='day'+(key===selectedDay?' current':'');
+    el.innerHTML=`<span>${d.toLocaleDateString('en-IN',{weekday:'short'})}</span><b>${items.length?Math.round(done/items.length*100)+'%':'—'}</b>`;
+    box.append(el);
+  }
+}
+function renderHistory() {
+  const box=$('history'); box.innerHTML='';
+  const keys=[...new Set([...tasks.map(x=>x.day),...habits.map(x=>x.day),...logs.map(x=>x.day)])].sort().reverse();
+  if(!keys.length){box.innerHTML='<div class="empty">Your story starts today.</div>';return;}
+  keys.forEach(k=>{
+    const ts=tasks.filter(t=>t.day===k), done=ts.filter(t=>t.is_done).length, mins=logs.filter(l=>l.day===k).reduce((a,x)=>a+x.minutes,0);
+    const el=document.createElement('div');el.className='historyitem';
+    const a=document.createElement('span');a.textContent=new Date(`${k}T12:00:00`).toLocaleDateString('en-IN',{day:'numeric',month:'short',year:'numeric'});
+    const b=document.createElement('b');b.textContent=`${done}/${ts.length} done · ${mins} min`;
+    el.append(a,b);box.append(el);
+  });
+}
+function render() {
+  const ts=dayTasks(), done=ts.filter(t=>t.is_done).length, mins=minutesFor(), pct=ts.length?Math.round(done/ts.length*100):0;
+  $('completed').textContent=done; $('active').textContent=ts.length; $('pending').textContent=ts.length-done;
+  $('learning').textContent=(mins/60).toFixed(mins%60?1:0)+'h'; $('learningSub').textContent=mins+' minutes';
+  $('percent').textContent=pct+'% complete'; $('fill').style.width=pct+'%';
+  $('todayLearning').textContent=mins+' min';
+  $('todayLabel').textContent=new Date(`${selectedDay}T12:00:00`).toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  $('datePicker')?.setAttribute('value',selectedDay);
+  renderTasks();renderHabits();renderWeek();renderHistory();
+  const items=$('learningItems');items.innerHTML='';
+  dayLogs().forEach(log=>{const el=document.createElement('div');el.className='historyitem';const a=document.createElement('span');a.textContent=`${log.minutes} minutes`;const b=document.createElement('button');b.className='del';b.textContent='×';b.onclick=()=>removeLearning(log);el.append(a,b);items.append(el);});
+}
+function exportData() {
+  const data={exported_at:new Date().toISOString(),account:user.email,tasks,habits,learning_logs:logs};
+  const url=URL.createObjectURL(new Blob([JSON.stringify(data,null,2)],{type:'application/json'}));
+  const a=document.createElement('a');a.href=url;a.download='little-by-little-journal.json';a.click();URL.revokeObjectURL(url);
+}
+async function deleteData() {
+  if(!confirm('Permanently delete all journal data in this account? This cannot be undone.')) return;
+  const results=await Promise.all([
+    supabase.from('tasks').delete().eq('user_id',user.id),
+    supabase.from('habits').delete().eq('user_id',user.id),
+    supabase.from('learning_logs').delete().eq('user_id',user.id)
+  ]);
+  const error=results.find(r=>r.error)?.error;
+  if(error) setMessage(error.message,true); else await loadData();
+}
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Playfair+Display:wght@500;600&display=swap');
+:root{font-family:'DM Sans',sans-serif;color:#493e37;background:#f7f2ec;font-synthesis:none;text-rendering:optimizeLegibility}
+*{box-sizing:border-box}body{margin:0;min-width:320px;background:#f7f2ec}button,input,select{font:inherit}button{cursor:pointer}
+#app{max-width:1160px;margin:auto;padding:28px 22px 60px}.boot{min-height:80vh;display:grid;place-content:center;text-align:center;color:#8c766a;font-size:30px}.boot span{font:24px 'Playfair Display',serif}.boot small{font:12px 'DM Sans';margin-top:10px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:28px}.brand{display:flex;align-items:center;gap:12px}.logo{width:46px;height:46px;border-radius:17px;background:#8c766a;color:#fff;display:grid;place-items:center;font-size:24px}.brand h1{font:600 25px 'Playfair Display',serif;margin:0}.brand p{font-size:12px;color:#99877b;margin:4px 0 0}.account{display:flex;gap:8px;align-items:center}.user-chip{font-size:12px;color:#766459;background:#fffcf8;border:1px solid #e9dfd6;border-radius:30px;padding:10px 14px;max-width:220px;overflow:hidden;text-overflow:ellipsis}
+.hero{position:relative;overflow:hidden;padding:30px;border-radius:26px;background:linear-gradient(120deg,#e9ded3,#f2eae2 58%,#e5d8cc);margin-bottom:18px}.eyebrow{font-size:10px;letter-spacing:2px;font-weight:700;color:#8c766a}.hero h2{font:500 35px 'Playfair Display',serif;margin:10px 0 7px;color:#4e4038}.hero p{margin:0;color:#806f63;font-size:13px}.flower{position:absolute;right:30px;top:0;font-size:90px;opacity:.22}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}.card,.panel{background:#fffcf8;border:1px solid #ede4db;border-radius:20px;padding:18px;box-shadow:0 8px 24px #533e2e08}.stat small{font-size:11px;color:#99877b}.stat strong{display:block;font:600 28px 'Playfair Display',serif;margin-top:7px;color:#5e4a40}.stat em{font-style:normal;font-size:10px;color:#a18e80}
+.progress{margin:16px 0 20px}.progressline{display:flex;justify-content:space-between;font-size:12px;margin-bottom:8px}.track{height:9px;background:#eee5dc;border-radius:99px;overflow:hidden}.fill{height:100%;width:0;background:#a58d7b;border-radius:99px;transition:width .2s}
+.grid{display:grid;grid-template-columns:minmax(0,1.35fr) minmax(270px,.85fr);gap:16px;align-items:start}.panel{margin-bottom:15px}.head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:15px}.head h3{font:600 20px 'Playfair Display',serif;margin:0}.muted{font-size:11px;color:#a18e80}
+.formrow{display:flex;gap:8px;margin-bottom:12px}.field,select{min-width:0;border:1px solid #e7dcd2;background:#fffefc;color:#55483f;border-radius:12px;padding:12px;font-size:12px;outline:none}.field:focus,select:focus{border-color:#a58d7b}.field.task{flex:1}.btn{border:0;border-radius:12px;background:#8c766a;color:#fff;font-weight:700;padding:11px 16px;font-size:12px}.btn:hover{background:#725d52}.btn:disabled{opacity:.55;cursor:wait}.btn.secondary{background:#ede2d8;color:#5e4a40}.btn.ghost{background:transparent;color:#806f63;border:1px solid #e4d7cb}
+.filters{display:flex;gap:7px;margin-bottom:12px;flex-wrap:wrap}.filter{border:1px solid #e7dcd2;background:transparent;color:#806f63;border-radius:99px;padding:7px 12px;font-size:11px}.filter.active{background:#ede2d8;color:#5e4a40;border-color:transparent;font-weight:700}.tasklist{display:grid;gap:8px}.taskrow{display:flex;align-items:center;gap:10px;padding:12px;border:1px solid #f0e8e0;background:#fffefc;border-radius:13px}.taskrow input,.habit input{accent-color:#8c766a;width:16px;height:16px}.tasktext{flex:1;font-size:12px;overflow-wrap:anywhere}.taskrow.done .tasktext{text-decoration:line-through;color:#b2a69c}.tag{font-size:10px;border-radius:99px;padding:5px 8px;background:#f0e8e0;color:#806f63}.del{border:0;background:none;color:#b5a69a;font-size:18px}.empty{text-align:center;color:#a18e80;padding:25px;font-size:12px}
+.habit{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #f0e8e0;font-size:12px}.habit:last-child{border:0}.habit label{display:flex;gap:9px;align-items:center}.week{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}.day{background:#f4ede6;border-radius:10px;text-align:center;padding:9px 2px;font-size:10px;color:#8d7c70}.day b{display:block;font-size:12px;margin-top:5px;color:#5e4a40}.day.current{background:#8c766a;color:white}.day.current b{color:white}.learningrow{display:flex;gap:8px}.learningrow input{flex:1;width:100px}.learningtotal{font:600 25px 'Playfair Display',serif;color:#806f63;margin-top:12px}.history{max-height:240px;overflow:auto}.historyitem{display:flex;justify-content:space-between;gap:10px;padding:9px 0;border-bottom:1px solid #f0e8e0;font-size:11px}.historyitem b{text-align:right}.privacy{font-size:11px;line-height:1.7;color:#978579}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+.auth-wrap{min-height:75vh;display:grid;place-items:center;padding:20px}.auth-card{width:min(440px,100%);background:#fffcf8;border:1px solid #ede4db;border-radius:26px;padding:30px;box-shadow:0 18px 60px #533e2e0d}.auth-mark{text-align:center;font-size:36px;color:#8c766a}.auth-card h1{text-align:center;font:600 29px 'Playfair Display',serif;margin:7px 0}.auth-card>p{text-align:center;color:#978579;font-size:12px;line-height:1.6;margin:0 0 22px}.auth-tabs{display:flex;background:#f4ede6;padding:4px;border-radius:12px;margin-bottom:16px}.auth-tabs button{flex:1;border:0;background:transparent;color:#806f63;border-radius:9px;padding:9px;font-size:12px}.auth-tabs button.active{background:#fffcf8;color:#5e4a40;font-weight:700;box-shadow:0 2px 8px #533e2e0c}.auth-form{display:grid;gap:10px}.auth-form label{font-size:11px;color:#806f63}.auth-form input{width:100%;margin-top:5px}.auth-form .btn{width:100%;padding:13px}.divider{display:flex;align-items:center;gap:10px;color:#b0a196;font-size:10px;margin:16px 0}.divider:before,.divider:after{content:'';height:1px;background:#eee5dc;flex:1}.google{width:100%;background:#fff;border:1px solid #e7dcd2;color:#55483f;border-radius:12px;padding:12px;font-size:12px;font-weight:600}.message{font-size:11px;line-height:1.5;padding:10px 12px;border-radius:10px;background:#f4ede6;color:#725d52;margin:10px 0}.message.error{background:#f9e9e5;color:#98584c}.message:empty{display:none}.auth-foot{text-align:center;font-size:10px;color:#a18e80;line-height:1.6;margin-top:18px}
+.setup{max-width:650px;margin:60px auto;background:#fffcf8;border:1px solid #ede4db;border-radius:24px;padding:28px}.setup h2{font:600 25px 'Playfair Display',serif}.setup code{background:#f4ede6;padding:2px 5px;border-radius:5px}
+@media(max-width:760px){#app{padding:18px 13px 40px}.grid{grid-template-columns:1fr}.stats{grid-template-columns:repeat(2,1fr);gap:8px}.card{padding:13px}.hero{padding:23px 20px}.hero h2{font-size:29px}.flower{right:8px;font-size:68px}.formrow{flex-wrap:wrap}.field.task{flex-basis:100%}.formrow select{flex:1}.top{margin-bottom:20px}.user-chip{max-width:130px}.account{gap:5px}.account .btn{padding:9px 10px}}
+
+async function start() {
+  if (!isSupabaseConfigured) { setupView(); return; }
+  const { data:{seimport { createClient } from '@supabase/supabase-js';
+
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+
+export const isSupabaseConfigured = Boolean(
+  supabaseUrl && supabaseAnonKey &&
+  !supabaseUrl.includes('YOUR-PROJECT-REF') &&
+  !supabaseAnonKey.includes('YOUR_SUPABASE')
+);
+
+export const supabase = isSupabaseConfigured
+  ? createClient(supabaseUrl, supabaseAnonKey, {
+      auth: {
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true
+      }
+    })
+  : null;
+ssion} } = await supabase.auth.getSession();
+  if (session?.user) { user=session.user; shell(); await loadData(); } else authView();
+  supabase.auth.onAuthStateChange(async (_event, session) => {
+    if (session?.user && !user) { user=session.user; selectedDay=today(); shell(); await loadData(); }
+    else if (!session?.user && user) { user=null; tasks=[];habits=[];logs=[];authView(); }
+  });
+}
+start();
