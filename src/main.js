@@ -251,7 +251,7 @@ async function start() {
 start();
 
 import './style.css';
-import { supabase, isSupabaseConfigured } from './supabase.js';
+
 
 const HABITS = [
   ['morning', 'Wake up with intention'],
