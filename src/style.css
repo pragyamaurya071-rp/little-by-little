@@ -335,4 +335,4 @@ body {
 @keyframes flowerFloat{0%,100%{transform:translateY(0) rotate(-8deg)}50%{transform:translateY(-9px) rotate(10deg)}}
 .card,.panel{transition:transform .2s ease,box-shadow .2s ease}.card:hover,.panel:hover{box-shadow:0 10px 26px rgba(130,95,140,.09)}
 @media(max-width:760px){.account{display:flex;align-items:center;gap:7px;flex-wrap:wrap;justify-content:flex-end}.live-clock{min-width:100px;padding:6px 9px}.monthly-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.monthly-stat:last-child{grid-column:span 2}}
-@media(prefers-reduced-motion:reduce){.hero .flower,.monthly-stat{animation:none;transition:none}}
+@media(prefers-reduced-motion:reduce){.hero .flower,.monthly-stat{animation:none;transition:none}} 
